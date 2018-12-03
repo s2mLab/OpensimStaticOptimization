@@ -261,6 +261,7 @@ class ClassicalOptimizationLinearConstraints(KinematicModel,
         self.constraint_matrix = []
         self.jacobian_matrix = []  # Precomputed jacobian
         self.__prepare_constraints()
+        self.previous_state = []
 
     def forward_dynamics(self, x):
         fs = self.model.getForceSet()
@@ -274,9 +275,9 @@ class ClassicalOptimizationLinearConstraints(KinematicModel,
 
     def upd_model_kinematics(self, frame):
         super().upd_model_kinematics(frame)
-        self.__prepare_constraints()
+        self.__prepare_constraints(np.ones([self.n_muscles]))
 
-    def __prepare_constraints(self):
+    def __prepare_constraints(self, activation):
         self.model.realizeVelocity(self.state)
 
         # Get optimal param
@@ -288,7 +289,7 @@ class ClassicalOptimizationLinearConstraints(KinematicModel,
             if muscle:
                 if self.use_muscle_physiology:
                     self.model.setAllControllersEnabled(True)
-                    self.optimal_forces.append(muscle.calcInextensibleTendonActiveFiberForce(self.state, 1.0))
+                    self.optimal_forces.append(muscle.calcInextensibleTendonActiveFiberForce(self.state, activation[i]))
                     self.model.setAllControllersEnabled(False)
                 else:
                     self.optimal_forces.append(muscle.getMaxIsometricForce())
@@ -297,7 +298,7 @@ class ClassicalOptimizationLinearConstraints(KinematicModel,
                 self.optimal_forces.append(coordinate.getOptimalForce())
 
         # Construct linear constraints
-        self.linear_constraints()
+        self.linear_constraints(activation)
 
     def constraints(self, x, idx=None):
         x_tp = x.reshape((x.shape[0], 1))
@@ -310,7 +311,7 @@ class ClassicalOptimizationLinearConstraints(KinematicModel,
         else:
             return c
 
-    def linear_constraints(self):
+    def linear_constraints(self, activation):
         fs = self.model.getForceSet()
         for i in range(fs.getSize()):
             act = osim.ScalarActuator.safeDownCast(fs.get(i))
@@ -323,9 +324,40 @@ class ClassicalOptimizationLinearConstraints(KinematicModel,
 
         self.constraint_matrix = np.zeros((self.n_dof, self.n_actuators))
         for p in range(0, self.n_actuators):
-            p_vector[p] = 1
+            p_vector[p] = activation[p]
             self.constraint_matrix[:, p] = np.array(super().constraints(p_vector)) - self.constraint_vector
             p_vector[p] = 0
 
     def jacobian(self, x):
         return self.constraint_matrix
+
+
+
+class LocalOptimizationLinearConstraints(KinematicModel, ClassicalOptimizationLinearConstraints):
+    def set_previous_activation(self, x):
+        self.previous_activation = x
+
+    def get_previous_activation(self):
+        return self.previous_activation
+
+    def __xfrompreviousx(self, x):
+        return x * self.previous_activation # !!! addition will not work !!!
+
+    def forward_dynamics(self, x):
+        super().forward_dynamics(x) # x[i] * self.optimal_forces[i]
+        #return self.state.getUDot()
+
+    def upd_model_kinematics(self, frame):
+        super(KinematicModel, self).upd_model_kinematics(frame)
+        self.__prepare_constraints(self.previous_activations)
+
+    def objective(self, x):
+        super().objective(self.__xfrompreviousx(x))
+
+    def gradient(self, x):
+        super().gradient(self.__xfrompreviousx(x))
+
+
+
+
+
